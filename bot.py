@@ -251,11 +251,11 @@ STORY_TEXT = (
 
 RULES_TEXT = (
     "📜 <b>Правила</b>\n\n"
-    "• ТОЛЬКО с  травлями и угрозами(рофл)\n"
-    "• ТОЛЬКО с историями\n"
+    "• Без оскорблений, травли и угроз\n"
+    "• Без личных данных других людей\n"
     "• Без рекламы и спама\n"
     "• Одна история — одно сообщение\n\n"
-    "Модераторы могут отклонить историю "
+    "Модераторы могут отклонить историю или слегка отредактировать текст "
     "перед публикацией (например, убрать имена)."
 )
 
@@ -268,6 +268,7 @@ HELP_USER_TEXT = (
     "/help — эта справка\n"
     "/story — как отправить историю\n"
     "/rules — правила публикации\n"
+    "/id — узнать свой ID и ID чата"
 )
 
 HELP_ADMIN_TEXT = (
@@ -437,12 +438,61 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
     async def cmd_rules(message: Message) -> None:
         await message.answer(RULES_TEXT, parse_mode="HTML")
 
+    async def save_moderator_edit(message: Message, key: str, user) -> None:
+        """Сохраняет новый текст истории, который прислал модератор."""
+        new_text = (message.text or "").strip()
+        if new_text.startswith("/"):
+            return
+
+        item = data["pending"].get(key)
+        if not item:
+            _editing.pop(user.id, None)
+            await message.reply("История уже обработана — правка не сохранена.")
+            return
+
+        if item.get("content_type", "text") != "text" and len(new_text) > 1024:
+            await message.reply(
+                "Слишком длинная подпись для фото/видео (максимум 1024 символа). "
+                "Сократи текст и пришли снова."
+            )
+            return
+
+        item["edited_text"] = new_text
+        item["edited_by"] = user.full_name
+        bump("edited")
+        _editing.pop(user.id, None)
+        save_data()
+
+        in_queue = key in data["queue"]
+        preview = new_text if len(new_text) <= 500 else new_text[:500] + "…"
+        await message.reply(
+            f"✅ Текст истории #{key} обновлён ({user.full_name}).\n\n"
+            f"Так она выйдет в канал:\n{preview}"
+        )
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=cfg.admin_chat_id,
+                message_id=item["control_message_id"],
+                reply_markup=queued_keyboard(key) if in_queue else moderation_keyboard(key),
+            )
+        except Exception:
+            pass
+
     # ---------- личка: история ----------
     @dp.message(F.chat.type == "private", F.content_type.in_({"text", "photo", "video"}))
     async def on_story(message: Message) -> None:
         user = message.from_user
         if user is None:
             return
+
+        # Если модератор нажал «Изменить текст», разрешаем прислать новый текст
+        # не только в группе админов, но и в личку боту. Иначе такой текст
+        # воспринимался как новая история/игнорировался и правка не сохранялась.
+        edit_key = _editing.get(user.id)
+        if edit_key and message.content_type == "text":
+            await save_moderator_edit(message, edit_key, user)
+            return
+
         if user.id in data["banned"]:
             return  # молча игнорируем заблокированных
 
@@ -536,8 +586,9 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             # включаем режим редактирования для этого модератора
             _editing[call.from_user.id] = key
             hint = (
-                f"✏️ {moderator}, пришли в этот чат новый текст истории #{key} "
-                "одним сообщением.\n"
+                f"✏️ {moderator}, пришли новый текст истории #{key} одним сообщением.\n"
+                "Можно ответить на это сообщение в группе админов или отправить текст в личку боту.\n"
+                "Если бот не видит обычные сообщения в группе — отключи Privacy Mode у бота в @BotFather.\n"
                 "Для фото/видео текст станет подписью.\n"
                 "Отмена — /cancel"
             )
@@ -666,42 +717,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         if not key:
             return  # обычная переписка в группе админов — игнорируем
 
-        new_text = (message.text or "").strip()
-        if new_text.startswith("/"):
-            return
-        item = data["pending"].get(key)
-        if not item:
-            _editing.pop(user.id, None)
-            await message.reply("История уже обработана — правка не сохранена.")
-            return
-
-        if item.get("content_type", "text") != "text" and len(new_text) > 1024:
-            await message.reply(
-                "Слишком длинная подпись для фото/видео (максимум 1024 символа). "
-                "Сократи текст и пришли снова."
-            )
-            return
-
-        item["edited_text"] = new_text
-        item["edited_by"] = user.full_name
-        bump("edited")
-        _editing.pop(user.id, None)
-        save_data()
-
-        in_queue = key in data["queue"]
-        preview = new_text if len(new_text) <= 500 else new_text[:500] + "…"
-        await message.reply(
-            f"✅ Текст истории #{key} обновлён ({user.full_name}).\n\n"
-            f"Так она выйдет в канал:\n{preview}"
-        )
-        try:
-            await message.bot.edit_message_reply_markup(
-                chat_id=cfg.admin_chat_id,
-                message_id=item["control_message_id"],
-                reply_markup=queued_keyboard(key) if in_queue else moderation_keyboard(key),
-            )
-        except Exception:
-            pass
+        await save_moderator_edit(message, key, user)
 
     dp["publish"] = publish
     return dp
