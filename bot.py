@@ -27,6 +27,7 @@
 """
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -244,15 +245,32 @@ def is_awaiting_story(user_id: int) -> bool:
 # =====================================================================
 #  ФОРМАТ ПУБЛИКАЦИИ В КАНАЛЕ
 # =====================================================================
-PUBLISH_HEADER = "🔥НОВАЯ ИСТОРИЯ ОТ БОТА @Gnid_Hach_Bot"
-PUBLISH_FOOTER = "💬А ТЫ ЧТО ДУМАЕШЬ ОБ ЭТОМ?"
+PUBLISH_HEADER = "НОВАЯ ИСТОРИЯ"
+PUBLISH_FOOTER = "А ТЫ ЧТО ДУМАЕШЬ ОБ ЭТОМ?"
 # сколько символов текста истории влезает в подпись к фото/видео
 # (1024 минус заголовок, подпись снизу, кавычки и переносы строк)
 CAPTION_LIMIT = 1024 - len(PUBLISH_HEADER) - len(PUBLISH_FOOTER) - 12
 
 
 def format_for_channel(text: str) -> str:
-    """НОВАЯ ИСТОРИЯ\n\n\u201cистория\u201d\n\nА ТЫ ЧТО ДУМАЕШЬ ОБ ЭТОМ?"""
+    """HTML-версия поста: заголовок и вопрос снизу жирные."""
+    return (
+        f"<b>{html.escape(PUBLISH_HEADER)}</b>\n\n"
+        f"\u201c{html.escape(text.strip())}\u201d\n\n"
+        f"<b>{html.escape(PUBLISH_FOOTER)}</b>"
+    )
+
+
+def format_caption_only() -> str:
+    """Подпись без текста истории (только заголовок и вопрос)."""
+    return (
+        f"<b>{html.escape(PUBLISH_HEADER)}</b>\n\n"
+        f"<b>{html.escape(PUBLISH_FOOTER)}</b>"
+    )
+
+
+def format_plain(text: str) -> str:
+    """То же самое без HTML — для превью модератору."""
     return f"{PUBLISH_HEADER}\n\n\u201c{text.strip()}\u201d\n\n{PUBLISH_FOOTER}"
 
 
@@ -561,7 +579,9 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
 
         if content_type == "text":
             if text:
-                await bot.send_message(chat_id, format_for_channel(text))
+                await bot.send_message(
+                    chat_id, format_for_channel(text), parse_mode="HTML"
+                )
             else:
                 # старая история без сохранённого текста — копируем как есть
                 await bot.copy_message(
@@ -578,13 +598,15 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
                 from_chat_id=cfg.admin_chat_id,
                 message_id=item["content_message_id"],
                 caption=format_for_channel(text),
+                parse_mode="HTML",
             )
         else:
             await bot.copy_message(
                 chat_id=chat_id,
                 from_chat_id=cfg.admin_chat_id,
                 message_id=item["content_message_id"],
-                caption=f"{PUBLISH_HEADER}\n\n{PUBLISH_FOOTER}",
+                caption=format_caption_only(),
+                parse_mode="HTML",
             )
 
     async def publish(bot: Bot, key: str) -> bool:
@@ -664,7 +686,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         save_data()
 
         in_queue = key in data["queue"]
-        preview = format_for_channel(new_text)
+        preview = format_plain(new_text)
         if len(preview) > 700:
             preview = preview[:700] + "\u2026"
         await message.reply(
@@ -687,7 +709,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         if user is None:
             return
 
-        # Если модератор нажал «Изменить текст», разрешаем прислать новый текст
+        # Если модератор нажал «Изменить текст», разрешаем прислать   овый текст
         # не только в группе админов, но и в личку боту.
         edit_key = _editing.get(user.id)
         if edit_key and message.content_type == "text":
@@ -697,7 +719,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         if user.id in data["banned"]:
             return  # молча игнорируем заблокированных
 
-        # ГЛАВНОЕ: историю принимаем только после команды /story — защита от спама
+        # ГЛАВНОЕ: историю принимаем   олько после команды /story — защита от спама
         if not is_awaiting_story(user.id):
             await message.answer(NEED_STORY_COMMAND_TEXT)
             return
@@ -1188,7 +1210,7 @@ async def scheduler(bot: Bot, cfg: Config, publish) -> None:
                                 reply_to_message_id=control_id,
                             )
                         except Exception:
-                            log.exception("Не удалось опубликовать историю %s из очереди", key)
+                            log.exception("Не удалос   опубликовать историю %s из очереди", key)
                     else:
                         if key in data["queue"]:
                             data["queue"].remove(key)
