@@ -21,6 +21,8 @@
 /unban <id>     — разблокировать пользователя
 /check          — диагностика доступов
 /cancel         — отменить режим редактирования истории
+/when           — расписание очереди: когда выйдет каждая история
+/at <id> <время> — назначить точное время публикации
 """
 
 import asyncio
@@ -29,9 +31,9 @@ import logging
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
@@ -300,16 +302,127 @@ HELP_ADMIN_TEXT = (
     "/stats — статистика бота\n"
     "/banned — список забаненных\n"
     "/unban &lt;id&gt; — разблокировать пользователя\n"
+    "/when — когда выйдет каждая история из очереди\n"
+    "/at &lt;id&gt; &lt;время&gt; — назначить точное время (например /at 7 21:30)\n"
     "/check — диагностика доступов\n"
     "/cancel — выйти из режима редактирования\n"
     "/id — ID этого чата\n\n"
     "<b>Кнопки под каждой историей:</b>\n"
     "🚀 Опубликовать сейчас — сразу в канал\n"
-    "🕐 В очередь — публикация по расписанию\n"
+    "🕐 В очередь — публикация по расписанию (бот сразу пишет, когда выйдет)\n"
+    "🗓 Выбрать время публикации — выбрать точное время кнопками\n"
     "✏️ Изменить текст — переписать историю перед публикацией\n"
     "👁 Предпросмотр — показать, как выйдет в канале\n"
     "❌ Отклонить · 🚫 Заблокировать автора"
 )
+
+
+# =====================================================================
+#  ВРЕМЯ ПУБЛИКАЦИИ
+# =====================================================================
+TIME_FMT = "%Y-%m-%d %H:%M"
+
+
+def zone() -> ZoneInfo:
+    return ZoneInfo(cfg.tz_name)
+
+
+def now_local() -> datetime:
+    return datetime.now(zone())
+
+
+def parse_local(value: Optional[str]) -> Optional[datetime]:
+    """Строка 'YYYY-MM-DD HH:MM' -> datetime с часовым поясом бота."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, TIME_FMT).replace(tzinfo=zone())
+    except (ValueError, TypeError):
+        return None
+
+
+def upcoming_slots(count: int = 4) -> List[datetime]:
+    """Ближайшие слоты из PUBLISH_TIMES (с учётом перехода на следующие дни)."""
+    now = now_local().replace(second=0, microsecond=0)
+    slots: List[datetime] = []
+    day = 0
+    while len(slots) < count and day < 30:
+        base = now + timedelta(days=day)
+        for raw in sorted(cfg.publish_times):
+            hh, _, mm = raw.partition(":")
+            try:
+                moment = base.replace(hour=int(hh), minute=int(mm))
+            except ValueError:
+                continue
+            if moment > now and moment not in slots:
+                slots.append(moment)
+        day += 1
+    slots.sort()
+    return slots[:count]
+
+
+def auto_queue_keys() -> List[str]:
+    """Ключи в очереди без точного врем      ни — они идут по расписанию."""
+    return [
+        k
+        for k in data["queue"]
+        if not (data["pending"].get(k) or {}).get("publish_at")
+    ]
+
+
+def eta_for_key(key: str) -> Tuple[Optional[datetime], str]:
+    """(время публикации, режим) для истории в очереди."""
+    item = data["pending"].get(key)
+    if not item or key not in data["queue"]:
+        return None, "none"
+    exact = parse_local(item.get("publish_at"))
+    if exact:
+        return exact, "exact"
+    keys = auto_queue_keys()
+    if key not in keys:
+        return None, "auto"
+    index = keys.index(key)
+    slots = upcoming_slots(index + 1)
+    if len(slots) > index:
+        return slots[index], "auto"
+    return None, "auto"
+
+
+def human_when(moment: Optional[datetime]) -> str:
+    """'сегодня в 20:00 (через 2 ч 15 мин)'"""
+    if moment is None:
+        return "время пока неизвестно"
+    now = now_local()
+    if moment.date() == now.date():
+        day = "сегодня"
+    elif moment.date() == (now + timedelta(days=1)).date():
+        day = "завтра"
+    else:
+        day = moment.strftime("%d.%m")
+    minutes = int((moment - now).total_seconds() // 60)
+    if minutes <= 0:
+        left = "вот-вот"
+    elif minutes < 60:
+        left = f"через {minutes} мин"
+    else:
+        left = f"через {minutes // 60} ч {minutes % 60:02d} мин"
+    return f"{day} в {moment.strftime('%H:%M')} ({left})"
+
+
+def schedule_line(key: str) -> str:
+    """Строка статуса для сообщения модерации."""
+    moment, mode = eta_for_key(key)
+    if mode == "none":
+        return "Не в очереди"
+    place = data["queue"].index(key) + 1
+    if mode == "exact":
+        return f"🕐 Запланировано на {human_when(moment)} — точное время"
+    return f"🕐 В очереди, место {place} — выйдет {human_when(moment)} (по расписанию)"
+
+
+def base_control_text(text: str) -> str:
+    """Убирает ранее добавленные строки статуса, чтобы они не накапливались."""
+    return text.split("\n\n")[0]
 
 
 # =====================================================================
@@ -320,6 +433,7 @@ def moderation_keyboard(key: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data=f"pub:{key}")],
             [InlineKeyboardButton(text="🕐 В очередь (по расписанию)", callback_data=f"que:{key}")],
+            [InlineKeyboardButton(text="🗓 Выбрать время публикации", callback_data=f"tim:{key}")],
             [
                 InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"edt:{key}"),
                 InlineKeyboardButton(text="👁 Предпросмотр", callback_data=f"prv:{key}"),
@@ -336,6 +450,7 @@ def queued_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data=f"pub:{key}")],
+            [InlineKeyboardButton(text="🗓 Изменить время публикации", callback_data=f"tim:{key}")],
             [
                 InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"edt:{key}"),
                 InlineKeyboardButton(text="👁 Предпросмотр", callback_data=f"prv:{key}"),
@@ -343,6 +458,43 @@ def queued_keyboard(key: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rej:{key}")],
         ]
     )
+
+
+def time_keyboard(key: str) -> InlineKeyboardMarkup:
+    """Выбор времени публикации прямо в чате."""
+    rows: List[List[InlineKeyboardButton]] = []
+    for moment in upcoming_slots(4):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"📅 {human_when(moment)}",
+                    callback_data=f"set:{key}:{moment.strftime('%Y-%m-%dT%H:%M')}",
+                )
+            ]
+        )
+    now = now_local().replace(second=0, microsecond=0)
+    quick = [("+15 мин", 15), ("+1 час", 60), ("+3 часа", 180), ("+6 часов", 360)]
+    row: List[InlineKeyboardButton] = []
+    for label, minutes in quick:
+        moment = now + timedelta(minutes=minutes)
+        row.append(
+            InlineKeyboardButton(
+                text=f"⏱ {label} ({moment.strftime('%H:%M')})",
+                callback_data=f"set:{key}:{moment.strftime('%Y-%m-%dT%H:%M')}",
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [InlineKeyboardButton(text="🔁 По расписанию (авто)", callback_data=f"aut:{key}")]
+    )
+    rows.append(
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bck:{key}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # =====================================================================
@@ -562,7 +714,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             )
             return
 
-        # окно приёма закрываем: следующая история — только после нового /story
+        # окно   ри  м   закрываем: следующая история — только после нового /story
         _awaiting_story.pop(user.id, None)
 
         data["counter"] += 1
@@ -613,7 +765,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             return
 
         moderator = call.from_user.full_name
-        control_text = call.message.text or f"История #{key}"
+        control_text = base_control_text(call.message.text or f"История #{key}")
 
         if action == "pub":
             try:
@@ -626,16 +778,19 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             await call.answer("Опубликовано ✅")
 
         elif action == "que":
-            if key in data["queue"]:
+            if key in data["queue"] and not item.get("publish_at"):
                 await call.answer("Уже в очереди", show_alert=True)
                 return
-            data["queue"].append(key)
+            item.pop("publish_at", None)  # вернули в авторежим
+            if key not in data["queue"]:
+                data["queue"].append(key)
             save_data()
             await call.message.edit_text(
-                f"{control_text}\n\n🕐 В очереди ({moderator}), место {len(data['queue'])}",
+                f"{control_text}\n\n{schedule_line(key)}\nПоставил: {moderator}",
                 reply_markup=queued_keyboard(key),
             )
-            await call.answer("Добавлено в очередь 🕐")
+            moment, _ = eta_for_key(key)
+            await call.answer(f"В очереди 🕐 Выйдет {human_when(moment)}", show_alert=True)
 
         elif action == "edt":
             # включаем режим редактирования для этого модератора
@@ -683,6 +838,77 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             )
             await call.answer("Заблокирован 🚫")
 
+    # ---------- выбор времени публикации ----------
+    @dp.callback_query(F.data.startswith(("tim:", "set:", "aut:", "bck:")))
+    async def on_time_pick(call: CallbackQuery) -> None:
+        if call.message is None or call.message.chat.id != cfg.admin_chat_id:
+            await call.answer("Недоступно", show_alert=True)
+            return
+
+        action, _, rest = (call.data or "").partition(":")
+        key, _, raw_time = rest.partition(":")
+        item = data["pending"].get(key)
+        if not item:
+            await call.answer("История уже обработана", show_alert=True)
+            return
+
+        moderator = call.from_user.full_name
+        control_text = base_control_text(call.message.text or f"История #{key}")
+
+        if action == "tim":
+            # показываем пикер времени
+            hint = (
+                f"{control_text}\n\n🗓 Выбери время публикации для #{key}.\n"
+                f"Сейчас: {now_local().strftime('%d.%m %H:%M')} ({cfg.tz_name})\n"
+                f"Любое своё время: /at {key} 21:30 или /at {key} 12.09 21:30"
+            )
+            await call.message.edit_text(hint, reply_markup=time_keyboard(key))
+            await call.answer("Выбери время 🗓")
+            return
+
+        if action == "bck":
+            in_queue = key in data["queue"]
+            status = f"\n\n{schedule_line(key)}" if in_queue else ""
+            await call.message.edit_text(
+                f"{control_text}{status}",
+                reply_markup=queued_keyboard(key) if in_queue else moderation_keyboard(key),
+            )
+            await call.answer()
+            return
+
+        if action == "aut":
+            item.pop("publish_at", None)
+            if key not in data["queue"]:
+                data["queue"].append(key)
+            save_data()
+            await call.message.edit_text(
+                f"{control_text}\n\n{schedule_line(key)}\nПоставил: {moderator}",
+                reply_markup=queued_keyboard(key),
+            )
+            moment, _mode = eta_for_key(key)
+            await call.answer(f"По расписанию: {human_when(moment)}", show_alert=True)
+            return
+
+        # action == "set": точное время из кнопки
+        try:
+            moment = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M").replace(tzinfo=zone())
+        except ValueError:
+            await call.answer("Не понял время", show_alert=True)
+            return
+        if moment <= now_local():
+            moment = now_local().replace(second=0, microsecond=0) + timedelta(minutes=1)
+
+        item["publish_at"] = moment.strftime(TIME_FMT)
+        item["scheduled_by"] = moderator
+        if key not in data["queue"]:
+            data["queue"].append(key)
+        save_data()
+        await call.message.edit_text(
+            f"{control_text}\n\n{schedule_line(key)}\nНазначил: {moderator}",
+            reply_markup=queued_keyboard(key),
+        )
+        await call.answer(f"Ок! Выйдет {human_when(moment)}", show_alert=True)
+
     # ---------- команды в группе админов ----------
     @dp.message(Command("cancel"), F.chat.id == cfg.admin_chat_id)
     async def cmd_cancel(message: Message) -> None:
@@ -697,8 +923,126 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         await message.answer(
             f"В очереди: {len(data['queue'])} шт.\n"
             f"На модерации всего: {len(data['pending'])} шт.\n"
-            f"Расписание: {', '.join(cfg.publish_times)} ({cfg.tz_name})."
+            f"Расписание: {', '.join(cfg.publish_times)} ({cfg.tz_name}).\n"
+            "Когда выйдет каждая история — /when"
         )
+
+    # ---------- расписание очереди ----------
+    @dp.message(Command("when"), F.chat.id == cfg.admin_chat_id)
+    async def cmd_when(message: Message) -> None:
+        if not data["queue"]:
+            slots = upcoming_slots(3)
+            hint = ", ".join(m.strftime("%d.%m %H:%M") for m in slots)
+            await message.answer(
+                "Очередь пуста ✨\n"
+                f"Ближайшие слоты расписания: {hint}"
+            )
+            return
+
+        lines = [
+            "🗓 Когда выйдут истории",
+            f"Сейчас: {now_local().strftime('%d.%m %H:%M')} ({cfg.tz_name})",
+            "",
+        ]
+        rows = []
+        for key in data["queue"]:
+            moment, mode = eta_for_key(key)
+            rows.append((moment, key, mode))
+        rows.sort(key=lambda r: (r[0] is None, r[0]))
+        for moment, key, mode in rows:
+            item = data["pending"].get(key) or {}
+            mark = "точное время" if mode == "exact" else "по расписанию"
+            extra = " · отредактирована" if item.get("edited_text") else ""
+            lines.append(
+                f"#{key} · {item.get('content_type', 'text')} — {human_when(moment)} "
+                f"[{mark}]{extra}"
+            )
+        lines += [
+            "",
+            "Изменить время: кнопка «🗓 Изменить время публикации» под историей",
+            "или команда: /at <id> 21:30 · /at <id> 12.09 21:30 · /at <id> auto",
+        ]
+        await message.answer("\n".join(lines))
+
+    # ---------- точное время командой ----------
+    @dp.message(Command("at"), F.chat.id == cfg.admin_chat_id)
+    async def cmd_at(message: Message) -> None:
+        usage = (
+            "Использование:\n"
+            "/at <id истории> 21:30 — сегодня/завтра в 21:30\n"
+            "/at <id> 12.09 21:30 — конкретная дата\n"
+            "/at <id> 2026-09-12 21:30 — полный формат\n"
+            "/at <id> auto — вернуть по расписанию\n\n"
+            "Список id — /pending или /when"
+        )
+        parts = (message.text or "").split()
+        if len(parts) < 3:
+            await message.answer(usage)
+            return
+
+        key = parts[1].lstrip("#")
+        item = data["pending"].get(key)
+        if not item:
+            await message.answer(f"Истории #{key} нет на модерации. Посмотри /pending")
+            return
+
+        arg = " ".join(parts[2:]).strip()
+        if arg.lower() in ("auto", "авто", "-"):
+            item.pop("publish_at", None)
+            if key not in data["queue"]:
+                data["queue"].append(key)
+            save_data()
+            await message.answer(f"История #{key}: {schedule_line(key)}")
+            return
+
+        now = now_local().replace(second=0, microsecond=0)
+        moment: Optional[datetime] = None
+        if re.fullmatch(r"\d{1,2}:\d{2}", arg):
+            hh, mm = arg.split(":")
+            try:
+                moment = now.replace(hour=int(hh), minute=int(mm))
+            except ValueError:
+                moment = None
+            if moment and moment <= now:
+                moment += timedelta(days=1)  # время уже прошло — значит завтра
+        else:
+            for fmt, with_year in (
+                ("%Y-%m-%d %H:%M", True),
+                ("%d.%m.%Y %H:%M", True),
+                ("%d.%m %H:%M", False),
+            ):
+                try:
+                    parsed = datetime.strptime(arg, fmt)
+                except ValueError:
+                    continue
+                if not with_year:
+                    parsed = parsed.replace(year=now.year)
+                moment = parsed.replace(tzinfo=zone())
+                if not with_year and moment <= now:
+                    moment = moment.replace(year=now.year + 1)
+                break
+
+        if moment is None:
+            await message.answer("Не понял время 😕\n\n" + usage)
+            return
+        if moment <= now:
+            await message.answer("Это время уже прошло. Укажи будущее время.")
+            return
+
+        item["publish_at"] = moment.strftime(TIME_FMT)
+        item["scheduled_by"] = message.from_user.full_name if message.from_user else ""
+        if key not in data["queue"]:
+            data["queue"].append(key)
+        save_data()
+        await message.answer(f"✅ История #{key}: {schedule_line(key)}")
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=cfg.admin_chat_id,
+                message_id=item["control_message_id"],
+                reply_markup=queued_keyboard(key),
+            )
+        except Exception:
+            pass
 
     @dp.message(Command("pending"), F.chat.id == cfg.admin_chat_id)
     async def cmd_pending(message: Message) -> None:
@@ -709,7 +1053,12 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         for key, item in list(data["pending"].items())[:30]:
             marks = []
             if key in data["queue"]:
-                marks.append(f"в очереди #{data['queue'].index(key) + 1}")
+                moment, mode = eta_for_key(key)
+                mark = "точное время" if mode == "exact" else "по расписанию"
+                marks.append(
+                    f"в очереди #{data['queue'].index(key) + 1}, "
+                    f"выйдет {human_when(moment)} [{mark}]"
+                )
             if item.get("edited_text"):
                 marks.append("отредактирована")
             suffix = f" — {', '.join(marks)}" if marks else ""
@@ -786,12 +1135,37 @@ async def scheduler(bot: Bot, cfg: Config, publish) -> None:
     while True:
         try:
             now = datetime.now(tz)
+
+            # --- 1. истории с точным временем, которое уже наступило ---
+            for key in list(data["queue"]):
+                item = data["pending"].get(key)
+                if not item:
+                    data["queue"].remove(key)
+                    save_data()
+                    continue
+                moment = parse_local(item.get("publish_at"))
+                if moment is None or moment > now:
+                    continue
+                control_id = item["control_message_id"]
+                try:
+                    await publish(bot, key)
+                    await bot.send_message(
+                        cfg.admin_chat_id,
+                        f"✅ История #{key} опубликована в назначенное время "
+                        f"({moment.strftime('%d.%m %H:%M')}).",
+                        reply_to_message_id=control_id,
+                    )
+                except Exception:
+                    log.exception("Не удалось опубликовать историю %s по точному времени", key)
+
+            # --- 2. обычные слоты расписания ---
             slot = now.strftime("%Y-%m-%d %H:%M")
             if now.strftime("%H:%M") in cfg.publish_times and slot != data["last_slot"]:
                 data["last_slot"] = slot
                 save_data()
-                if data["queue"]:
-                    key = data["queue"][0]
+                auto_keys = auto_queue_keys()
+                if auto_keys:
+                    key = auto_keys[0]
                     item = data["pending"].get(key)
                     if item:
                         control_id = item["control_message_id"]
@@ -799,13 +1173,14 @@ async def scheduler(bot: Bot, cfg: Config, publish) -> None:
                             await publish(bot, key)
                             await bot.send_message(
                                 cfg.admin_chat_id,
-                                "✅ История из очереди опубликована по расписанию.",
+                                f"✅ История #{key} из очереди опубликована по расписанию.",
                                 reply_to_message_id=control_id,
                             )
                         except Exception:
                             log.exception("Не удалось опубликовать историю %s из очереди", key)
                     else:
-                        data["queue"].pop(0)
+                        if key in data["queue"]:
+                            data["queue"].remove(key)
                         save_data()
         except Exception:
             log.exception("Ошибка в планировщике")
@@ -834,6 +1209,8 @@ async def set_bot_commands(bot: Bot, cfg: Config) -> None:
     admin_commands = [
         BotCommand(command="help", description="Справка для модераторов"),
         BotCommand(command="queue", description="Очередь публикаций"),
+        BotCommand(command="when", description="Когда выйдут истории"),
+        BotCommand(command="at", description="Время публикации: /at id 21:30"),
         BotCommand(command="pending", description="Истории на модерации"),
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="banned", description="Забаненные"),
