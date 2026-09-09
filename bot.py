@@ -220,6 +220,21 @@ def bump(stat: str, delta: int = 1) -> None:
 _last_message_at: Dict[int, float] = {}
 # модератор -> ключ истории, которую он сейчас редактирует
 _editing: Dict[int, str] = {}
+# пользователь -> момент, когда он нажал /story (ждём от него историю)
+_awaiting_story: Dict[int, float] = {}
+# сколько секунд действует режим отправки после /story
+STORY_WAIT_TTL = 15 * 60
+
+
+def is_awaiting_story(user_id: int) -> bool:
+    """True, если пользователь недавно нажал /story и ещё не прислал историю."""
+    started = _awaiting_story.get(user_id)
+    if started is None:
+        return False
+    if time.monotonic() - started > STORY_WAIT_TTL:
+        _awaiting_story.pop(user_id, None)
+        return False
+    return True
 
 
 # =====================================================================
@@ -229,9 +244,9 @@ WELCOME_TEXT = (
     "Привет! 👋\n\n"
     "Это бот «Подслушано» — здесь твоя история попадёт в канал <b>анонимно</b>.\n\n"
     "<b>Как отправить историю:</b>\n"
-    "Просто напиши мне сообщение в этот чат — текст, фото или видео. "
-    "Никаких команд не нужно, отправляй прямо сейчас.\n"
-    "Если хочешь подсказку — набери /story\n\n"
+    "1. Отправь команду /story\n"
+    "2. Следующим сообщением пришли текст, фото или видео\n\n"
+    "Без команды /story сообщения не принимаются — так мы боремся со спамом.\n\n"
     "<b>Команды:</b>\n"
     "/help — справка и список команд\n"
     "/story — как отправить историю\n"
@@ -241,12 +256,17 @@ WELCOME_TEXT = (
 )
 
 STORY_TEXT = (
-    "✍️ <b>Как отправить историю</b>\n\n"
-    "1. Напиши текст истории обычным сообщением в этот чат.\n"
-    "2. Можно вместо текста прислать фото или видео (подпись тоже отправится).\n"
-    "3. Отправь — история сразу уйдёт модераторам.\n"
-    "4. Когда её опубликуют, я пришлю тебе уведомление.\n\n"
+    "✍️ <b>Жду твою историю</b>\n\n"
+    "Пришли <b>следующим сообщением</b> текст, фото или видео (подпись тоже отправится).\n"
+    "Одно сообщение — одна история, она сразу уйдёт модераторам.\n"
+    "Когда её опубликуют, я пришлю уведомление.\n\n"
+    f"Режим отправки активен {STORY_WAIT_TTL // 60} минут. Передумал — /cancel\n\n"
     "Отправляй анонимно — твоё имя и username в канал не попадают."
+)
+
+NEED_STORY_COMMAND_TEXT = (
+    "Чтобы отправить историю, сначала отправь команду /story, "
+    "а потом уже сам текст, фото или видео 🙌"
 )
 
 RULES_TEXT = (
@@ -261,12 +281,13 @@ RULES_TEXT = (
 
 HELP_USER_TEXT = (
     "ℹ️ <b>Справка</b>\n\n"
-    "Чтобы отправить историю — просто пришли мне текст, фото или видео. "
-    "Команда для этого не нужна.\n\n"
+    "Чтобы отправить историю — отправь /story, а следующим сообщением "
+    "пришли текст, фото или видео.\n\n"
     "<b>Команды:</b>\n"
     "/start — приветствие\n"
     "/help — эта справка\n"
-    "/story — как отправить историю\n"
+    "/story — отправить историю\n"
+    "/cancel — отменить отправку истории\n"
     "/rules — правила публикации\n"
     "/id — узнать свой ID и ID чата"
 )
@@ -432,7 +453,28 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
     # ---------- личка: /story и /rules ----------
     @dp.message(Command("story"), F.chat.type == "private")
     async def cmd_story(message: Message) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        if user.id in data["banned"]:
+            return  # молча игнорируем заблокированных
+        # открываем окно приёма истории для этого пользователя
+        _awaiting_story[user.id] = time.monotonic()
         await message.answer(STORY_TEXT, parse_mode="HTML")
+
+    @dp.message(Command("cancel"), F.chat.type == "private")
+    async def cmd_cancel_private(message: Message) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        was_editing = _editing.pop(user.id, None)
+        was_awaiting = _awaiting_story.pop(user.id, None)
+        if was_editing:
+            await message.answer("Режим редактирования отменён.")
+        elif was_awaiting:
+            await message.answer("Ок, отменил — историю не жду. Набери /story, когда будешь готов.")
+        else:
+            await message.answer("Отменять нечего 🙂 Чтобы отправить историю — /story")
 
     @dp.message(Command("rules"), F.chat.type == "private")
     async def cmd_rules(message: Message) -> None:
@@ -496,6 +538,11 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         if user.id in data["banned"]:
             return  # молча игнорируем заблокированных
 
+        # ГЛАВНОЕ: историю принимаем только после команды /story — защита от спама
+        if not is_awaiting_story(user.id):
+            await message.answer(NEED_STORY_COMMAND_TEXT)
+            return
+
         now = time.monotonic()
         if now - _last_message_at.get(user.id, 0.0) < cfg.cooldown:
             await message.answer("Не так быстро 🙂 Подожди немного перед следующей историей.")
@@ -514,6 +561,9 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
                 "Не получилось отправить историю на модерацию 😔 Попробуй позже."
             )
             return
+
+        # окно приёма закрываем: следующая история — только после нового /story
+        _awaiting_story.pop(user.id, None)
 
         data["counter"] += 1
         key = str(data["counter"])
@@ -536,13 +586,18 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
 
         await message.answer(
             "Спасибо! История отправлена на модерацию. "
-            "Если её одобрят — она появится в канале анонимно. ✌️"
+            "Если её одобрят — она появится в канале анонимно. ✌️\n"
+            "Хочешь отправить ещё одну — снова набери /story"
         )
 
     # ---------- личка: остальное ----------
     @dp.message(F.chat.type == "private")
     async def on_other_content(message: Message) -> None:
-        await message.answer("Я принимаю текст, фото и видео 🙈 Подсказка: /help")
+        user = message.from_user
+        if user is not None and is_awaiting_story(user.id):
+            await message.answer("Я принимаю только текст, фото и видео 🙈 Пришли историю так.")
+            return
+        await message.answer(NEED_STORY_COMMAND_TEXT)
 
     # ---------- кнопки модерации ----------
     @dp.callback_query(F.data.startswith(("pub:", "que:", "rej:", "ban:", "edt:", "prv:")))
@@ -676,7 +731,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             f"Отклонено/забанено: {stats.get('rejected', 0)}\n"
             f"Отредактировано: {stats.get('edited', 0)}\n\n"
             f"Сейчас на модерации: {len(data['pending'])}\n"
-            f"В очереди: {len(data['queue'])}\n"
+            f"В очер  ди: {len(data['queue'])}\n"
             f"В бане: {len(data['banned'])}"
         )
 
@@ -771,7 +826,8 @@ async def set_bot_commands(bot: Bot, cfg: Config) -> None:
     private_commands = [
         BotCommand(command="start", description="Приветствие"),
         BotCommand(command="help", description="Справка и команды"),
-        BotCommand(command="story", description="Как отправить историю"),
+        BotCommand(command="story", description="Отправить историю"),
+        BotCommand(command="cancel", description="Отменить отправку истории"),
         BotCommand(command="rules", description="Правила публикации"),
         BotCommand(command="id", description="Мой ID"),
     ]
