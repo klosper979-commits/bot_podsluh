@@ -10,7 +10,8 @@
 /start          — приветствие и инструкция
 /help           — список команд и как отправить историю
 /story          — как отправить историю (напоминание)
-/id             — узнать ID чата и свой ID (работает где угодно)
+/rules          — правила публикации
+/cancel         — отменить отправку истории
 
 Команды админов (в группе админов):
 /help           — справка для модераторов
@@ -115,8 +116,9 @@ class Config:
         if not self.admin_chat_id_raw:
             problems.append(
                 "ADMIN_CHAT_ID пустой.\n"
-                "   Как узнать: добавь бота в свою группу админов, напиши там /id — "
-                "бот пришлёт ID этой группы."
+                "   Как узнать: открой группу админов в web.telegram.org — ID будет\n"
+                "   в адресной строке (для супергруппы добавь префикс -100),\n"
+                "   либо используй @getmyid_bot."
             )
         else:
             try:
@@ -132,7 +134,7 @@ class Config:
                         f"ADMIN_CHAT_ID = {self.admin_chat_id} похож на ID пользователя, "
                         "а не группы.\n"
                         "   ID групп всегда отрицательный, у супергрупп начинается с -100.\n"
-                        "   Напиши /id в самой группе, чтобы получить верный ID."
+                        "   Возьми ID группы через @getmyid_bot."
                     )
 
         # --- канал ---
@@ -168,9 +170,9 @@ class Config:
 
         if problems:
             raise ConfigError(
-                "\n\n❌ Бот не запущен — проблемы с настройками:\n\n"
-                + "\n\n".join(f" • {p}" for p in problems)
-                + f"\n\nФайл настроек: {ENV_FILE}\n"
+                "\n\n\u274c Бот не запущен — проблемы с настройками:\n\n"
+                + "\n\n".join(f" \u2022 {p}" for p in problems)
+                + f"\n\nФай   настроек: {ENV_FILE}\n"
                 "Если файла нет — скопируй .env.example в .env и заполни.\n"
             )
 
@@ -240,10 +242,30 @@ def is_awaiting_story(user_id: int) -> bool:
 
 
 # =====================================================================
+#  ФОРМАТ ПУБЛИКАЦИИ В КАНАЛЕ
+# =====================================================================
+PUBLISH_HEADER = "НОВАЯ ИСТОРИЯ"
+PUBLISH_FOOTER = "А ТЫ ЧТО ДУМАЕШЬ ОБ ЭТОМ?"
+# сколько символов текста истории влезает в подпись к фото/видео
+# (1024 минус заголовок, подпись снизу, кавычки и переносы строк)
+CAPTION_LIMIT = 1024 - len(PUBLISH_HEADER) - len(PUBLISH_FOOTER) - 12
+
+
+def format_for_channel(text: str) -> str:
+    """НОВАЯ ИСТОРИЯ\n\n\u201cистория\u201d\n\nА ТЫ ЧТО ДУМАЕШЬ ОБ ЭТОМ?"""
+    return f"{PUBLISH_HEADER}\n\n\u201c{text.strip()}\u201d\n\n{PUBLISH_FOOTER}"
+
+
+def story_text(item: Dict[str, Any]) -> str:
+    """Актуальный текст истории: правка модератора или оригинал автора."""
+    return (item.get("edited_text") or item.get("original_text") or "").strip()
+
+
+# =====================================================================
 #  ТЕКСТЫ
 # =====================================================================
 WELCOME_TEXT = (
-    "Привет! 👋\n\n"
+    "Привет! \U0001f44b\n\n"
     "Это бот «Подслушано» — здесь твоя история попадёт в канал <b>анонимно</b>.\n\n"
     "<b>Как отправить историю:</b>\n"
     "1. Отправь команду /story\n"
@@ -252,13 +274,12 @@ WELCOME_TEXT = (
     "<b>Команды:</b>\n"
     "/help — справка и список команд\n"
     "/story — как отправить историю\n"
-    "/rules — правила публикации\n"
-    "/id — узнать свой ID и ID чата\n\n"
-    "После проверки модераторами история появится в канале. Автор не указывается. ✌️"
+    "/rules — правила публикации\n\n"
+    "После проверки модераторами история появится в канале. Автор не указывается. \u270c\ufe0f"
 )
 
 STORY_TEXT = (
-    "✍️ <b>Жду твою историю</b>\n\n"
+    "\u270f\ufe0f <b>Жду твою историю</b>\n\n"
     "Пришли <b>следующим сообщением</b> текст, фото или видео (подпись тоже отправится).\n"
     "Одно сообщение — одна история, она сразу уйдёт модераторам.\n"
     "Когда её опубликуют, я пришлю уведомление.\n\n"
@@ -268,21 +289,21 @@ STORY_TEXT = (
 
 NEED_STORY_COMMAND_TEXT = (
     "Чтобы отправить историю, сначала отправь команду /story, "
-    "а потом уже сам текст, фото или видео 🙌"
+    "а потом уже сам текст, фото или видео \U0001f64c"
 )
 
 RULES_TEXT = (
-    "📜 <b>Правила</b>\n\n"
-    "• Без оскорблений, травли и угроз\n"
-    "• Без личных данных других людей\n"
-    "• Без рекламы и спама\n"
-    "• Одна история — одно сообщение\n\n"
+    "\U0001f4dc <b>Правила</b>\n\n"
+    "\u2022 Без оскорблений, травли и угроз\n"
+    "\u2022 Без личных данных других людей\n"
+    "\u2022 Без рекламы и спама\n"
+    "\u2022 Одна история — одно сообщение\n\n"
     "Модераторы могут отклонить историю или слегка отредактировать текст "
     "перед публикацией (например, убрать имена)."
 )
 
 HELP_USER_TEXT = (
-    "ℹ️ <b>Справка</b>\n\n"
+    "\u2139\ufe0f <b>Справка</b>\n\n"
     "Чтобы отправить историю — отправь /story, а следующим сообщением "
     "пришли текст, фото или видео.\n\n"
     "<b>Команды:</b>\n"
@@ -290,12 +311,11 @@ HELP_USER_TEXT = (
     "/help — эта справка\n"
     "/story — отправить историю\n"
     "/cancel — отменить отправку истории\n"
-    "/rules — правила публикации\n"
-    "/id — узнать свой ID и ID чата"
+    "/rules — правила публикации"
 )
 
 HELP_ADMIN_TEXT = (
-    "🛠 <b>Справка для модераторов</b>\n\n"
+    "\U0001f6e0 <b>Справка для модераторов</b>\n\n"
     "<b>Команды:</b>\n"
     "/queue — сколько историй в очереди\n"
     "/pending — список историй на модерации\n"
@@ -305,15 +325,14 @@ HELP_ADMIN_TEXT = (
     "/when — когда выйдет каждая история из очереди\n"
     "/at &lt;id&gt; &lt;время&gt; — назначить точное время (например /at 7 21:30)\n"
     "/check — диагностика доступов\n"
-    "/cancel — выйти из режима редактирования\n"
-    "/id — ID этого чата\n\n"
+    "/cancel — выйти из режима редактирования\n\n"
     "<b>Кнопки под каждой историей:</b>\n"
-    "🚀 Опубликовать сейчас — сразу в канал\n"
-    "🕐 В очередь — публикация по расписанию (бот сразу пишет, когда выйдет)\n"
-    "🗓 Выбрать время публикации — выбрать точное время кнопками\n"
-    "✏️ Изменить текст — переписать историю перед публикацией\n"
-    "👁 Предпросмотр — показать, как выйдет в канале\n"
-    "❌ Отклонить · 🚫 Заблокировать автора"
+    "\U0001f680 Опубликовать сейчас — сразу в канал\n"
+    "\U0001f550 В очередь — публикация по расписанию (бот сразу пишет, когда выйдет)\n"
+    "\U0001f5d3 Выбрать время публикации — выбрать точное время кн  пками\n"
+    "\u270f\ufe0f Изменить текст — переписать историю перед публикацией\n"
+    "\U0001f441 Предпросмотр — показать, как выйдет в канале\n"
+    "\u274c Отклонить \u00b7 \U0001f6ab Заблокировать автора"
 )
 
 
@@ -362,7 +381,7 @@ def upcoming_slots(count: int = 4) -> List[datetime]:
 
 
 def auto_queue_keys() -> List[str]:
-    """Ключи в очереди без точного врем      ни — они идут по расписанию."""
+    """Ключи в очереди без точного времени — они идут по расписанию."""
     return [
         k
         for k in data["queue"]
@@ -416,8 +435,8 @@ def schedule_line(key: str) -> str:
         return "Не в очереди"
     place = data["queue"].index(key) + 1
     if mode == "exact":
-        return f"🕐 Запланировано на {human_when(moment)} — точное время"
-    return f"🕐 В очереди, место {place} — выйдет {human_when(moment)} (по расписанию)"
+        return f"\U0001f550 Запланировано на {human_when(moment)} — точное время"
+    return f"\U0001f550 В очереди, место {place} — выйдет {human_when(moment)} (по расписанию)"
 
 
 def base_control_text(text: str) -> str:
@@ -431,16 +450,16 @@ def base_control_text(text: str) -> str:
 def moderation_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data=f"pub:{key}")],
-            [InlineKeyboardButton(text="🕐 В очередь (по расписанию)", callback_data=f"que:{key}")],
-            [InlineKeyboardButton(text="🗓 Выбрать время публикации", callback_data=f"tim:{key}")],
+            [InlineKeyboardButton(text="\U0001f680 Опубликовать сейчас", callback_data=f"pub:{key}")],
+            [InlineKeyboardButton(text="\U0001f550 В очередь (по расписанию)", callback_data=f"que:{key}")],
+            [InlineKeyboardButton(text="\U0001f5d3 Выбрать время публикации", callback_data=f"tim:{key}")],
             [
-                InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"edt:{key}"),
-                InlineKeyboardButton(text="👁 Предпросмотр", callback_data=f"prv:{key}"),
+                InlineKeyboardButton(text="\u270f\ufe0f Изменить текст", callback_data=f"edt:{key}"),
+                InlineKeyboardButton(text="\U0001f441 Предпросмотр", callback_data=f"prv:{key}"),
             ],
             [
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rej:{key}"),
-                InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"ban:{key}"),
+                InlineKeyboardButton(text="\u274c Отклонить", callback_data=f"rej:{key}"),
+                InlineKeyboardButton(text="\U0001f6ab Заблокировать", callback_data=f"ban:{key}"),
             ],
         ]
     )
@@ -449,13 +468,13 @@ def moderation_keyboard(key: str) -> InlineKeyboardMarkup:
 def queued_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data=f"pub:{key}")],
-            [InlineKeyboardButton(text="🗓 Изменить время публикации", callback_data=f"tim:{key}")],
+            [InlineKeyboardButton(text="\U0001f680 Опубликовать сейчас", callback_data=f"pub:{key}")],
+            [InlineKeyboardButton(text="\U0001f5d3 Изменить время публикации", callback_data=f"tim:{key}")],
             [
-                InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"edt:{key}"),
-                InlineKeyboardButton(text="👁 Предпросмотр", callback_data=f"prv:{key}"),
+                InlineKeyboardButton(text="\u270f\ufe0f Изменить текст", callback_data=f"edt:{key}"),
+                InlineKeyboardButton(text="\U0001f441 Предпросмотр", callback_data=f"prv:{key}"),
             ],
-            [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rej:{key}")],
+            [InlineKeyboardButton(text="\u274c Отклонить", callback_data=f"rej:{key}")],
         ]
     )
 
@@ -467,7 +486,7 @@ def time_keyboard(key: str) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"📅 {human_when(moment)}",
+                    text=f"\U0001f4c5 {human_when(moment)}",
                     callback_data=f"set:{key}:{moment.strftime('%Y-%m-%dT%H:%M')}",
                 )
             ]
@@ -479,7 +498,7 @@ def time_keyboard(key: str) -> InlineKeyboardMarkup:
         moment = now + timedelta(minutes=minutes)
         row.append(
             InlineKeyboardButton(
-                text=f"⏱ {label} ({moment.strftime('%H:%M')})",
+                text=f"\u23f1 {label} ({moment.strftime('%H:%M')})",
                 callback_data=f"set:{key}:{moment.strftime('%Y-%m-%dT%H:%M')}",
             )
         )
@@ -489,10 +508,10 @@ def time_keyboard(key: str) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     rows.append(
-        [InlineKeyboardButton(text="🔁 По расписанию (авто)", callback_data=f"aut:{key}")]
+        [InlineKeyboardButton(text="\U0001f501 По расписанию (авто)", callback_data=f"aut:{key}")]
     )
     rows.append(
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bck:{key}")]
+        [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data=f"bck:{key}")]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -506,30 +525,6 @@ cfg = Config(read_env_file(ENV_FILE))
 def build_dispatcher(cfg: Config) -> Dispatcher:
     dp = Dispatcher()
 
-    # ---------- /id : помощник для получения ID ----------
-    @dp.message(Command("id"))
-    async def cmd_id(message: Message) -> None:
-        chat = message.chat
-        lines = [
-            "🆔 Информация о чате",
-            "",
-            f"chat.id: {chat.id}",
-            f"тип чата: {chat.type}",
-        ]
-        if chat.title:
-            lines.append(f"название: {chat.title}")
-        if chat.username:
-            lines.append(f"username: @{chat.username}")
-        if message.from_user:
-            lines.append("")
-            lines.append(f"твой user.id: {message.from_user.id}")
-
-        if chat.type in ("group", "supergroup"):
-            lines += ["", f"👉 Впиши в .env:  ADMIN_CHAT_ID={chat.id}"]
-        elif chat.type == "channel":
-            lines += ["", f"👉 Впиши в .env:  CHANNEL_ID={chat.id}"]
-        await message.answer("\n".join(lines))
-
     # ---------- /help : работает везде ----------
     @dp.message(Command("help"))
     async def cmd_help(message: Message) -> None:
@@ -541,17 +536,17 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
     # ---------- диагностика доступов ----------
     @dp.message(Command("check"), F.chat.id == cfg.admin_chat_id)
     async def cmd_check(message: Message) -> None:
-        report = ["🔍 Проверка настроек", ""]
-        report.append(f"ADMIN_CHAT_ID: {cfg.admin_chat_id} — ✅ совпал с этим чатом")
+        report = ["\U0001f50d Проверка настроек", ""]
+        report.append(f"ADMIN_CHAT_ID: {cfg.admin_chat_id} — \u2705 совпал с этим чатом")
         try:
             chat = await message.bot.get_chat(cfg.channel_id)
             member = await message.bot.get_chat_member(chat.id, (await message.bot.me()).id)
-            report.append(f"CHANNEL_ID: {cfg.channel_id} → «{chat.title}» ✅")
+            report.append(f"CHANNEL_ID: {cfg.channel_id} \u2192 «{chat.title}» \u2705")
             report.append(f"права бота в канале: {member.status}")
             if member.status not in ("administrator", "creator"):
-                report.append("⚠️ Бот должен быть АДМИНОМ канала с правом публикации.")
+                report.append("\u26a0\ufe0f Бот должен быть АДМИНОМ канала с правом публикации.")
         except Exception as exc:
-            report.append(f"CHANNEL_ID: {cfg.channel_id} — ❌ ошибка: {exc}")
+            report.append(f"CHANNEL_ID: {cfg.channel_id} — \u274c ошибка: {exc}")
             report.append("Добавь бота администратором канала и проверь CHANNEL_ID.")
         report.append("")
         report.append(f"Расписание: {', '.join(cfg.publish_times)} ({cfg.tz_name})")
@@ -560,25 +555,36 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
 
     # ---------- публикация ----------
     async def send_story(bot: Bot, chat_id: Any, item: Dict[str, Any]) -> None:
-        """Отправляет историю (оригинальную или отредактированную) в чат."""
-        text = (item.get("edited_text") or "").strip()
+        """Отправляет историю в чат в формате: НОВАЯ ИСТОРИЯ + \u201cтекст\u201d."""
+        text = story_text(item)
         content_type = item.get("content_type", "text")
-        if text and content_type == "text":
-            # текстовую историю после правки отправляем как новый текст
-            await bot.send_message(chat_id, text)
-        elif text:
-            # у фото/видео правим подпись
+
+        if content_type == "text":
+            if text:
+                await bot.send_message(chat_id, format_for_channel(text))
+            else:
+                # старая история без сохранённого текста — копируем как есть
+                await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=cfg.admin_chat_id,
+                    message_id=item["content_message_id"],
+                )
+            return
+
+        # фото/видео: заголовок и кавычки уходят в подпись
+        if text:
             await bot.copy_message(
                 chat_id=chat_id,
                 from_chat_id=cfg.admin_chat_id,
                 message_id=item["content_message_id"],
-                caption=text,
+                caption=format_for_channel(text),
             )
         else:
             await bot.copy_message(
                 chat_id=chat_id,
                 from_chat_id=cfg.admin_chat_id,
                 message_id=item["content_message_id"],
+                caption=f"{PUBLISH_HEADER}\n\n{PUBLISH_FOOTER}",
             )
 
     async def publish(bot: Bot, key: str) -> bool:
@@ -587,7 +593,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             return False
         await send_story(bot, cfg.channel_id, item)
         try:
-            await bot.send_message(item["user_id"], "Твоя история опубликована! 🎉")
+            await bot.send_message(item["user_id"], "Твоя история опубликована! \U0001f389")
         except Exception:
             pass  # пользователь мог заблокировать бота
         if key in data["queue"]:
@@ -626,7 +632,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         elif was_awaiting:
             await message.answer("Ок, отменил — историю не жду. Набери /story, когда будешь готов.")
         else:
-            await message.answer("Отменять нечего 🙂 Чтобы отправить историю — /story")
+            await message.answer("Отменять нечего \U0001f642 Чтобы отправить историю — /story")
 
     @dp.message(Command("rules"), F.chat.type == "private")
     async def cmd_rules(message: Message) -> None:
@@ -644,10 +650,10 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             await message.reply("История уже обработана — правка не сохранена.")
             return
 
-        if item.get("content_type", "text") != "text" and len(new_text) > 1024:
+        if item.get("content_type", "text") != "text" and len(new_text) > CAPTION_LIMIT:
             await message.reply(
-                "Слишком длинная подпись для фото/видео (максимум 1024 символа). "
-                "Сократи текст и пришли снова."
+                f"Слишком длинная подпись для фото/видео (максимум {CAPTION_LIMIT} символов "
+                "вместе с заголовком). Сократи текст и пришли снова."
             )
             return
 
@@ -658,9 +664,11 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         save_data()
 
         in_queue = key in data["queue"]
-        preview = new_text if len(new_text) <= 500 else new_text[:500] + "…"
+        preview = format_for_channel(new_text)
+        if len(preview) > 700:
+            preview = preview[:700] + "\u2026"
         await message.reply(
-            f"✅ Текст истории #{key} обновлён ({user.full_name}).\n\n"
+            f"\u2705 Текст истории #{key} обновлён ({user.full_name}).\n\n"
             f"Так она выйдет в канал:\n{preview}"
         )
         try:
@@ -680,8 +688,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             return
 
         # Если модератор нажал «Изменить текст», разрешаем прислать новый текст
-        # не только в группе админов, но и в личку боту. Иначе такой текст
-        # воспринимался как новая история/игнорировался и правка не сохранялась.
+        # не только в группе админов, но и в личку боту.
         edit_key = _editing.get(user.id)
         if edit_key and message.content_type == "text":
             await save_moderator_edit(message, edit_key, user)
@@ -697,7 +704,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
 
         now = time.monotonic()
         if now - _last_message_at.get(user.id, 0.0) < cfg.cooldown:
-            await message.answer("Не так быстро 🙂 Подожди немного перед следующей историей.")
+            await message.answer("Не так быстро \U0001f642 Подожди немного перед следующей историей.")
             return
         _last_message_at[user.id] = now
 
@@ -710,11 +717,11 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         except Exception:
             log.exception("Не удалось скопировать историю в группу админов")
             await message.answer(
-                "Не получилось отправить историю на модерацию 😔 Попробуй позже."
+                "Не получилось отправить историю на модерацию \U0001f614 Попробуй позже."
             )
             return
 
-        # окно   ри  м   закрываем: следующая история — только после нового /story
+        # окно приёма закрываем: следующая история — только после нового /story
         _awaiting_story.pop(user.id, None)
 
         data["counter"] += 1
@@ -722,7 +729,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         username = f"@{user.username}" if user.username else "без username"
         control = await message.bot.send_message(
             cfg.admin_chat_id,
-            f"📝 Новая история #{key}\nОт: {username} (id: {user.id})",
+            f"\U0001f4dd Новая история #{key}\nОт: {username} (id: {user.id})",
             reply_markup=moderation_keyboard(key),
             reply_to_message_id=copied.message_id,
         )
@@ -731,6 +738,8 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             "content_message_id": copied.message_id,
             "control_message_id": control.message_id,
             "content_type": message.content_type,
+            # оригинальный текст нужен, чтобы публиковать с заголовком «НОВАЯ ИСТОРИЯ»
+            "original_text": (message.text or message.caption or "").strip(),
             "created_at": datetime.now(ZoneInfo(cfg.tz_name)).strftime("%Y-%m-%d %H:%M"),
         }
         bump("received")
@@ -738,7 +747,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
 
         await message.answer(
             "Спасибо! История отправлена на модерацию. "
-            "Если её одобрят — она появится в канале анонимно. ✌️\n"
+            "Если её одобрят — она появится в канале анонимно. \u270c\ufe0f\n"
             "Хочешь отправить ещё одну — снова набери /story"
         )
 
@@ -747,7 +756,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
     async def on_other_content(message: Message) -> None:
         user = message.from_user
         if user is not None and is_awaiting_story(user.id):
-            await message.answer("Я принимаю только текст, фото и видео 🙈 Пришли историю так.")
+            await message.answer("Я принимаю только текст, фото и видео \U0001f648 Пришли историю так.")
             return
         await message.answer(NEED_STORY_COMMAND_TEXT)
 
@@ -774,8 +783,8 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
                 log.exception("Ошибка публикации %s", key)
                 await call.answer(f"Ошибка публикации: {exc}", show_alert=True)
                 return
-            await call.message.edit_text(f"{control_text}\n\n✅ Опубликовано ({moderator})")
-            await call.answer("Опубликовано ✅")
+            await call.message.edit_text(f"{control_text}\n\n\u2705 Опубликовано ({moderator})")
+            await call.answer("Опубликовано \u2705")
 
         elif action == "que":
             if key in data["queue"] and not item.get("publish_at"):
@@ -790,13 +799,13 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
                 reply_markup=queued_keyboard(key),
             )
             moment, _ = eta_for_key(key)
-            await call.answer(f"В очереди 🕐 Выйдет {human_when(moment)}", show_alert=True)
+            await call.answer(f"В очереди \U0001f550 Выйдет {human_when(moment)}", show_alert=True)
 
         elif action == "edt":
             # включаем режим редактирования для этого модератора
             _editing[call.from_user.id] = key
             hint = (
-                f"✏️ {moderator}, пришли новый текст истории #{key} одним сообщением.\n"
+                f"\u270f\ufe0f {moderator}, пришли новый текст истории #{key} одним сообщением.\n"
                 "Можно ответить на это сообщение в группе админов или отправить текст в личку боту.\n"
                 "Если бот не видит обычные сообщения в группе — отключи Privacy Mode у бота в @BotFather.\n"
                 "Для фото/видео текст станет подписью.\n"
@@ -804,8 +813,10 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             )
             if item.get("edited_text"):
                 hint += f"\n\nТекущая версия:\n{item['edited_text']}"
+            elif item.get("original_text"):
+                hint += f"\n\nОригинал:\n{item['original_text']}"
             await call.message.reply(hint)
-            await call.answer("Жду новый текст ✏️")
+            await call.answer("Жду новый текст \u270f\ufe0f")
 
         elif action == "prv":
             try:
@@ -813,7 +824,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             except Exception as exc:
                 await call.answer(f"Не удалось показать: {exc}", show_alert=True)
                 return
-            await call.answer("Предпросмотр отправлен 👁")
+            await call.answer("Предпросмотр отправлен \U0001f441")
 
         elif action == "rej":
             if key in data["queue"]:
@@ -821,7 +832,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             data["pending"].pop(key, None)
             bump("rejected")
             save_data()
-            await call.message.edit_text(f"{control_text}\n\n❌ Отклонено ({moderator})")
+            await call.message.edit_text(f"{control_text}\n\n\u274c Отклонено ({moderator})")
             await call.answer("Отклонено")
 
         elif action == "ban":
@@ -833,10 +844,10 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             bump("rejected")
             save_data()
             await call.message.edit_text(
-                f"{control_text}\n\n🚫 Пользователь заблокирован ({moderator})\n"
+                f"{control_text}\n\n\U0001f6ab Пользователь заблокирован ({moderator})\n"
                 f"Разбан: /unban {item['user_id']}"
             )
-            await call.answer("Заблокирован 🚫")
+            await call.answer("Заблокирован \U0001f6ab")
 
     # ---------- выбор времени публикации ----------
     @dp.callback_query(F.data.startswith(("tim:", "set:", "aut:", "bck:")))
@@ -858,12 +869,12 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         if action == "tim":
             # показываем пикер времени
             hint = (
-                f"{control_text}\n\n🗓 Выбери время публикации для #{key}.\n"
+                f"{control_text}\n\n\U0001f5d3 Выбери время публикации для #{key}.\n"
                 f"Сейчас: {now_local().strftime('%d.%m %H:%M')} ({cfg.tz_name})\n"
                 f"Любое своё время: /at {key} 21:30 или /at {key} 12.09 21:30"
             )
             await call.message.edit_text(hint, reply_markup=time_keyboard(key))
-            await call.answer("Выбери время 🗓")
+            await call.answer("Выбери время \U0001f5d3")
             return
 
         if action == "bck":
@@ -934,13 +945,13 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
             slots = upcoming_slots(3)
             hint = ", ".join(m.strftime("%d.%m %H:%M") for m in slots)
             await message.answer(
-                "Очередь пуста ✨\n"
+                "Очередь пуста \u2728\n"
                 f"Ближайшие слоты расписания: {hint}"
             )
             return
 
         lines = [
-            "🗓 Когда выйдут истории",
+            "\U0001f5d3 Когда выйдут истории",
             f"Сейчас: {now_local().strftime('%d.%m %H:%M')} ({cfg.tz_name})",
             "",
         ]
@@ -952,15 +963,15 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         for moment, key, mode in rows:
             item = data["pending"].get(key) or {}
             mark = "точное время" if mode == "exact" else "по расписанию"
-            extra = " · отредактирована" if item.get("edited_text") else ""
+            extra = " \u00b7 отредактирована" if item.get("edited_text") else ""
             lines.append(
-                f"#{key} · {item.get('content_type', 'text')} — {human_when(moment)} "
+                f"#{key} \u00b7 {item.get('content_type', 'text')} — {human_when(moment)} "
                 f"[{mark}]{extra}"
             )
         lines += [
             "",
-            "Изменить время: кнопка «🗓 Изменить время публикации» под историей",
-            "или команда: /at <id> 21:30 · /at <id> 12.09 21:30 · /at <id> auto",
+            "Изменить время: кнопка «\U0001f5d3 Изменить время публикации» под историей",
+            "или команда: /at <id> 21:30 \u00b7 /at <id> 12.09 21:30 \u00b7 /at <id> auto",
         ]
         await message.answer("\n".join(lines))
 
@@ -1023,7 +1034,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
                 break
 
         if moment is None:
-            await message.answer("Не понял время 😕\n\n" + usage)
+            await message.answer("Не понял время \U0001f615\n\n" + usage)
             return
         if moment <= now:
             await message.answer("Это время уже прошло. Укажи будущее время.")
@@ -1034,7 +1045,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
         if key not in data["queue"]:
             data["queue"].append(key)
         save_data()
-        await message.answer(f"✅ История #{key}: {schedule_line(key)}")
+        await message.answer(f"\u2705 История #{key}: {schedule_line(key)}")
         try:
             await message.bot.edit_message_reply_markup(
                 chat_id=cfg.admin_chat_id,
@@ -1047,9 +1058,9 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
     @dp.message(Command("pending"), F.chat.id == cfg.admin_chat_id)
     async def cmd_pending(message: Message) -> None:
         if not data["pending"]:
-            await message.answer("На модерации ничего нет ✨")
+            await message.answer("На модерации ничего нет \u2728")
             return
-        lines = ["📋 На модерации:", ""]
+        lines = ["\U0001f4cb На модерации:", ""]
         for key, item in list(data["pending"].items())[:30]:
             marks = []
             if key in data["queue"]:
@@ -1063,7 +1074,7 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
                 marks.append("отредактирована")
             suffix = f" — {', '.join(marks)}" if marks else ""
             lines.append(
-                f"#{key} · {item.get('content_type', 'text')} · "
+                f"#{key} \u00b7 {item.get('content_type', 'text')} \u00b7 "
                 f"{item.get('created_at', 'без даты')}{suffix}"
             )
         if len(data["pending"]) > 30:
@@ -1074,13 +1085,13 @@ def build_dispatcher(cfg: Config) -> Dispatcher:
     async def cmd_stats(message: Message) -> None:
         stats = data.get("stats", {})
         await message.answer(
-            "📊 Статистика\n\n"
+            "\U0001f4ca Статистика\n\n"
             f"Получено историй: {stats.get('received', 0)}\n"
             f"Опубликовано: {stats.get('published', 0)}\n"
             f"Отклонено/забанено: {stats.get('rejected', 0)}\n"
             f"Отредактировано: {stats.get('edited', 0)}\n\n"
             f"Сейчас на модерации: {len(data['pending'])}\n"
-            f"В очер  ди: {len(data['queue'])}\n"
+            f"В очереди: {len(data['queue'])}\n"
             f"В бане: {len(data['banned'])}"
         )
 
@@ -1151,7 +1162,7 @@ async def scheduler(bot: Bot, cfg: Config, publish) -> None:
                     await publish(bot, key)
                     await bot.send_message(
                         cfg.admin_chat_id,
-                        f"✅ История #{key} опубликована в назначенное время "
+                        f"\u2705 История #{key} опубликована в назначенное время "
                         f"({moment.strftime('%d.%m %H:%M')}).",
                         reply_to_message_id=control_id,
                     )
@@ -1173,7 +1184,7 @@ async def scheduler(bot: Bot, cfg: Config, publish) -> None:
                             await publish(bot, key)
                             await bot.send_message(
                                 cfg.admin_chat_id,
-                                f"✅ История #{key} из очереди опубликована по расписанию.",
+                                f"\u2705 История #{key} из очереди опубликована по расписанию.",
                                 reply_to_message_id=control_id,
                             )
                         except Exception:
@@ -1181,7 +1192,7 @@ async def scheduler(bot: Bot, cfg: Config, publish) -> None:
                     else:
                         if key in data["queue"]:
                             data["queue"].remove(key)
-                        save_data()
+                            save_data()
         except Exception:
             log.exception("Ошибка в планировщике")
         await asyncio.sleep(20)
@@ -1204,7 +1215,6 @@ async def set_bot_commands(bot: Bot, cfg: Config) -> None:
         BotCommand(command="story", description="Отправить историю"),
         BotCommand(command="cancel", description="Отменить отправку истории"),
         BotCommand(command="rules", description="Правила публикации"),
-        BotCommand(command="id", description="Мой ID"),
     ]
     admin_commands = [
         BotCommand(command="help", description="Справка для модераторов"),
@@ -1250,7 +1260,7 @@ async def main() -> None:
         me = await bot.me()
     except Exception as exc:
         print(
-            "\n❌ Telegram отклонил токен.\n"
+            "\n\u274c Telegram отклонил токен.\n"
             f"   Ошибка: {exc}\n"
             "   Проверь BOT_TOKEN в .env (и что токен не отозван в @BotFather).\n"
         )
